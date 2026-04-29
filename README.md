@@ -80,6 +80,14 @@ Each model is aligned to a LOWESS-smoothed observational time series at the mode
 
 The analysis includes 149 model variants spanning 1896--2007, from Arrhenius (1896) through IPCC AR4 (2007). Models with lower/median/upper variants are grouped by root name for visualization, with the median used as the central estimate.
 
+## Contributors
+
+- Nana Owusu-Boaitey
+- Zeke Hausfather
+- Mark Richardson
+- Jim Java
+- Lonni Besancon
+
 ## References
 
 - Hausfather, Z., Drake, H. F., Abbott, T., & Schmidt, G. A. (2020). Evaluating the performance of past climate model projections. *Geophysical Research Letters*, 47(1), e2019GL085378.
