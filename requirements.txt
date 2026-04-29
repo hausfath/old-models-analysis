@@ -1,0 +1,8 @@
+numpy
+pandas
+xarray
+statsmodels
+openpyxl
+tqdm
+matplotlib
+pytest
