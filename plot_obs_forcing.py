@@ -40,8 +40,10 @@ YEAR_MIN, YEAR_MAX = 1938, 2024
 LOESS_FRAC = 0.20
 F_2xCO2 = 3.7  # W/m2 forcing at 2xCO2
 
-# Variant tokens for grouping model lower/median/upper
-VARIANT_TOKENS = ("lower", "median", "upper", "average", "mean", "a", "b", "1", "2")
+# Variant tokens for grouping model lower/median/upper.
+# "a"/"b"/"1"/"2" are *not* variants — they identify distinct scenarios
+# (e.g. machta_1972_a vs machta_1972_b are separate models).
+VARIANT_TOKENS = ("lower", "median", "upper", "average", "mean")
 CENTRAL_PRIORITY = ("median", "average", "mean", "")
 YEAR_RE = re.compile(r"_(\d{4})(?!\d)")
 
@@ -184,10 +186,14 @@ def load_and_align_models():
                  and not c.endswith(("_lower_t", "_upper_t"))
                  and not c.endswith("_f")]
 
+    # Strip optional "_median"/"_average" plus the required "_t" suffix.
+    # The previous pattern required "_<group>_t" with group optional, which
+    # silently failed for plain "_t" columns (callendar_1938_t, plass_*_t, etc.)
+    # and dropped them from the figure.
     seen_bases = set()
     selected = []
     for col in sorted(temp_cols):
-        base = re.sub(r"_(median|average)?_t$", "", col, flags=re.I)
+        base = re.sub(r"(?:_(median|average))?_t$", "", col, flags=re.I)
         if base in seen_bases:
             continue
         for pref in [f"{base}_median_t", f"{base}_average_t", f"{base}_t"]:
@@ -196,16 +202,18 @@ def load_and_align_models():
                 seen_bases.add(base)
                 break
 
-    # Align each model to LOWESS obs at publication year
+    # Align each model to LOWESS obs at publication year (or YEAR_MIN if pub
+    # predates the obs window — e.g. Arrhenius 1896 aligns at 1938).
     aligned = {}
     for col in selected:
         py = pub_year_from_name(col)
-        if py is None or py < YEAR_MIN:
+        if py is None:
             continue
+        align_year = max(py, YEAR_MIN)
 
-        # 5-year window at pub year
-        m5_mdf = (mdf["year"] >= py) & (mdf["year"] < py + 5)
-        m5_gmst = (plot_years >= py) & (plot_years < py + 5)
+        # 5-year window starting at align_year
+        m5_mdf = (mdf["year"] >= align_year) & (mdf["year"] < align_year + 5)
+        m5_gmst = (plot_years >= align_year) & (plot_years < align_year + 5)
 
         if m5_mdf.sum() == 0 or m5_gmst.sum() == 0:
             continue
@@ -217,7 +225,7 @@ def load_and_align_models():
 
         shift = obs_mean_5 - mod_mean_5
         series = mdf[col].values + shift
-        series[mdf["year"].values < py] = np.nan
+        series[mdf["year"].values < align_year] = np.nan
         aligned[col] = series
 
     return plot_years, plot_obs, aligned
@@ -490,6 +498,7 @@ def fig_accuracy_over_time():
     ax.set_xlabel("Publication year")
     ax.set_ylabel("Model / Observed warming rate ratio")
     ax.set_title("Model accuracy over time")
+    ax.set_xlim(1935, rdf["pub_year"].max() + 2)
     ax.set_ylim(-0.5, max(4, rdf["ratio"].quantile(0.98) + 0.5))
     ax.grid(True, ls="--", alpha=0.2)
 
@@ -499,6 +508,254 @@ def fig_accuracy_over_time():
 
     fig.tight_layout()
     out = BASE / "model_accuracy_over_time.png"
+    fig.savefig(out, dpi=300)
+    plt.close(fig)
+    print(f"  Saved {out.name}")
+
+
+# ────────────────────────────────────────────────────────────
+# Figure 5b: Implied TCR Accuracy Over Time
+# ────────────────────────────────────────────────────────────
+def fig_tcr_accuracy_over_time():
+    """TCR-ratio analogue of fig_accuracy_over_time, using temp-vs-forcing slopes."""
+    df_models = pd.read_csv(MODEL_TRENDS_CSV)
+    df_obs = pd.read_csv(OBS_FORCING_CSV)
+
+    res = parse_variants(df_models, "model_forcing")
+    if res.empty:
+        print("  No model_forcing data, skipping TCR accuracy plot.")
+        return
+
+    records = []
+    for _, row in res.iterrows():
+        obs_row = match_obs_row(df_obs, row["start"], row["end"], "anthropogenic")
+        if obs_row is None or obs_row["coef_mean"] == 0:
+            continue
+        ratio_c = row["coef_central"] / obs_row["coef_mean"]
+        ratio_low = row["coef_low_variant"] / obs_row["coef_mean"]
+        ratio_high = row["coef_high_variant"] / obs_row["coef_mean"]
+        records.append({
+            "root": row["root"],
+            "pub_year": row["pub_year"],
+            "ratio": ratio_c,
+            "ratio_low": ratio_low,
+            "ratio_high": ratio_high,
+        })
+
+    rdf = pd.DataFrame(records)
+    if rdf.empty:
+        print("  No matching pairs for TCR accuracy plot.")
+        return
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+
+    colors = [era_color(py) for py in rdf["pub_year"]]
+    err_low = np.abs(rdf["ratio"] - rdf["ratio_low"])
+    err_high = np.abs(rdf["ratio_high"] - rdf["ratio"])
+
+    ax.errorbar(rdf["pub_year"], rdf["ratio"],
+                yerr=[err_low, err_high],
+                fmt="none", ecolor="lightgray", elinewidth=0.8, capsize=0, zorder=1)
+    ax.scatter(rdf["pub_year"], rdf["ratio"], c=colors, s=30, zorder=2,
+               edgecolors="white", linewidth=0.3)
+
+    ax.axhline(1.0, color="black", ls="--", lw=1.0, label="Perfect agreement")
+    ax.axhspan(0.8, 1.2, color="green", alpha=0.08, label="±20% band")
+
+    ax.set_xlabel("Publication year")
+    ax.set_ylabel("Model / Observed implied TCR ratio")
+    ax.set_title("Implied TCR accuracy over time")
+    ax.set_xlim(1935, rdf["pub_year"].max() + 2)
+    ax.set_ylim(-0.5, max(4, rdf["ratio"].quantile(0.98) + 0.5))
+    ax.grid(True, ls="--", alpha=0.2)
+
+    for era_label, era_col in ERA_COLORS.items():
+        ax.scatter([], [], color=era_col, s=30, label=era_label)
+    ax.legend(fontsize=8, loc="upper left")
+
+    fig.tight_layout()
+    out = BASE / "tcr_accuracy_over_time.png"
+    fig.savefig(out, dpi=300)
+    plt.close(fig)
+    print(f"  Saved {out.name}")
+
+
+# ────────────────────────────────────────────────────────────
+# Compact 2-panel comparisons (scatter + bias-over-time)
+# ────────────────────────────────────────────────────────────
+def _build_compact_records(df_models, df_obs, dtype, scale, forcing_type=None):
+    """Pair each model's central value with obs over the same timeframe.
+
+    `scale` multiplies coefs into display units (10 for °C/decade, F_2xCO2 for TCR).
+    """
+    res = parse_variants(df_models, dtype)
+    if res.empty:
+        return pd.DataFrame()
+
+    records = []
+    for _, row in res.iterrows():
+        obs_row = match_obs_row(df_obs, row["start"], row["end"], forcing_type)
+        if obs_row is None:
+            continue
+        m = row["coef_central"] * scale
+        m_lo = row["coef_low_variant"] * scale
+        m_hi = row["coef_high_variant"] * scale
+        o = obs_row["coef_mean"] * scale
+        o_lo = obs_row["coef_low"] * scale
+        o_hi = obs_row["coef_high"] * scale
+        records.append({
+            "root": row["root"],
+            "pub_year": row["pub_year"],
+            "model": m,
+            "model_err_low": abs(m - m_lo),
+            "model_err_high": abs(m_hi - m),
+            "obs": o,
+            "obs_err_low": abs(o - o_lo),
+            "obs_err_high": abs(o_hi - o),
+            "bias": m - o,
+            "bias_err": np.sqrt(((m_hi - m_lo) / 2) ** 2 + ((o_hi - o_lo) / 2) ** 2),
+        })
+    return pd.DataFrame(records)
+
+
+def _draw_scatter_panel(ax, rdf, axis_label, *, lim=None):
+    """Model-vs-obs scatter with 1:1 diagonal. Use robust limits and annotate
+    any high outliers above the visible range."""
+    colors = [era_color(py) for py in rdf["pub_year"]]
+    ax.errorbar(
+        rdf["obs"], rdf["model"],
+        xerr=[rdf["obs_err_low"], rdf["obs_err_high"]],
+        yerr=[rdf["model_err_low"], rdf["model_err_high"]],
+        fmt="none", ecolor="lightgray", elinewidth=0.6, capsize=0, zorder=1,
+    )
+    ax.scatter(rdf["obs"], rdf["model"], c=colors, s=28, zorder=2,
+               edgecolors="white", linewidth=0.3)
+
+    if lim is None:
+        # Robust square limits: drop high outliers so the dense cluster is readable.
+        vals = np.concatenate([rdf["obs"].values, rdf["model"].values])
+        vals = vals[np.isfinite(vals)]
+        hi = np.quantile(vals, 0.97)
+        lo = min(0, vals.min())
+        pad = 0.05 * (hi - lo)
+        lim = (lo - pad, hi + pad)
+
+    ax.plot(lim, lim, ls="--", lw=0.9, color="black", label="1:1 (perfect)")
+    ax.set_xlim(lim)
+    ax.set_ylim(lim)
+    ax.set_aspect("equal", adjustable="box")
+    ax.set_xlabel(f"Observed {axis_label}")
+    ax.set_ylabel(f"Model {axis_label}")
+    ax.grid(True, ls="--", alpha=0.25)
+
+    # Mark high outliers at the top edge with up-arrow markers; list them in an
+    # upper-right corner box, one per line.
+    above = rdf[rdf["model"] > lim[1]].sort_values("model", ascending=False)
+    if len(above) > 0:
+        edge_y = lim[1] - 0.02 * (lim[1] - lim[0])
+        edge_x = np.clip(above["obs"].values, lim[0], lim[1])
+        edge_colors = [era_color(py) for py in above["pub_year"]]
+        ax.scatter(edge_x, [edge_y] * len(above), marker="^",
+                   c=edge_colors, s=44, edgecolors="black", linewidth=0.4, zorder=3)
+        lines = ["Above range:"] + [
+            f"  {r['root']} ({r['model']:.1f})" for _, r in above.iterrows()
+        ]
+        ax.text(0.98, 0.98, "\n".join(lines), transform=ax.transAxes,
+                fontsize=6.5, color="dimgray", va="top", ha="right",
+                bbox=dict(facecolor="white", edgecolor="lightgray",
+                          boxstyle="round,pad=0.3", alpha=0.9))
+    return lim
+
+
+def _draw_bias_panel(ax, rdf, ylabel):
+    """Bias (model − obs) vs publication year. Clips high outliers to keep the
+    bulk of the data readable, marking them with edge arrows."""
+    colors = [era_color(py) for py in rdf["pub_year"]]
+    ax.errorbar(rdf["pub_year"], rdf["bias"], yerr=rdf["bias_err"],
+                fmt="none", ecolor="lightgray", elinewidth=0.6, capsize=0, zorder=1)
+    ax.scatter(rdf["pub_year"], rdf["bias"], c=colors, s=28, zorder=2,
+               edgecolors="white", linewidth=0.3)
+    ax.axhline(0, color="black", ls="--", lw=0.9)
+    ax.set_xlabel("Publication year")
+    ax.set_ylabel(ylabel)
+    ax.set_xlim(1935, rdf["pub_year"].max() + 2)
+
+    bias = rdf["bias"].values
+    finite = bias[np.isfinite(bias)]
+    hi = np.quantile(finite, 0.97)
+    lo = np.quantile(finite, 0.03)
+    span = hi - lo
+    ylim = (lo - 0.15 * span, hi + 0.15 * span)
+    ax.set_ylim(ylim)
+
+    above = rdf[rdf["bias"] > ylim[1]].sort_values("bias", ascending=False)
+    if len(above) > 0:
+        edge_y = ylim[1] - 0.03 * (ylim[1] - ylim[0])
+        edge_colors = [era_color(py) for py in above["pub_year"]]
+        ax.scatter(above["pub_year"], [edge_y] * len(above), marker="^",
+                   c=edge_colors, s=44, edgecolors="black", linewidth=0.4, zorder=3)
+        lines = ["Above range:"] + [
+            f"  {r['root']} ({r['bias']:+.1f})" for _, r in above.iterrows()
+        ]
+        ax.text(0.98, 0.98, "\n".join(lines), transform=ax.transAxes,
+                fontsize=6.5, color="dimgray", va="top", ha="right",
+                bbox=dict(facecolor="white", edgecolor="lightgray",
+                          boxstyle="round,pad=0.3", alpha=0.9))
+
+    ax.grid(True, ls="--", alpha=0.25)
+
+
+def _add_era_legend(ax):
+    for era_label, era_col in ERA_COLORS.items():
+        ax.scatter([], [], color=era_col, s=28, label=era_label,
+                   edgecolors="white", linewidth=0.3)
+    ax.legend(fontsize=8, loc="best", frameon=True)
+
+
+def fig_warming_rate_compact():
+    """2-panel: model-vs-obs scatter (left), bias-vs-pub-year (right)."""
+    df_models = pd.read_csv(MODEL_TRENDS_CSV)
+    df_obs = pd.read_csv(OBS_TIME_CSV)
+    rdf = _build_compact_records(df_models, df_obs, "model_time", scale=10)
+    if rdf.empty:
+        print("  No data for warming-rate compact plot, skipping.")
+        return
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 5))
+    _draw_scatter_panel(axes[0], rdf, "warming rate (°C / decade)")
+    _add_era_legend(axes[0])
+    axes[0].set_title("Model vs. observed warming rate\n(matched timeframes)")
+
+    _draw_bias_panel(axes[1], rdf, "Model − observed (°C / decade)")
+    axes[1].set_title("Bias vs. publication year")
+
+    fig.tight_layout()
+    out = BASE / "warming_rate_compact.png"
+    fig.savefig(out, dpi=300)
+    plt.close(fig)
+    print(f"  Saved {out.name}")
+
+
+def fig_implied_tcr_compact():
+    """2-panel TCR analogue of fig_warming_rate_compact."""
+    df_models = pd.read_csv(MODEL_TRENDS_CSV)
+    df_obs = pd.read_csv(OBS_FORCING_CSV)
+    rdf = _build_compact_records(df_models, df_obs, "model_forcing",
+                                 scale=F_2xCO2, forcing_type="anthropogenic")
+    if rdf.empty:
+        print("  No data for TCR compact plot, skipping.")
+        return
+
+    fig, axes = plt.subplots(1, 2, figsize=(11, 5))
+    _draw_scatter_panel(axes[0], rdf, "implied TCR (°C / 2×CO₂)")
+    _add_era_legend(axes[0])
+    axes[0].set_title("Model vs. observed implied TCR\n(matched timeframes)")
+
+    _draw_bias_panel(axes[1], rdf, "Model − observed (°C / 2×CO₂)")
+    axes[1].set_title("Bias vs. publication year")
+
+    fig.tight_layout()
+    out = BASE / "implied_tcr_compact.png"
     fig.savefig(out, dpi=300)
     plt.close(fig)
     print(f"  Saved {out.name}")
@@ -635,22 +892,31 @@ def fig_forcing_comparison():
 def main():
     print("Generating figures...")
 
-    print("\n[1/6] Implied TCR plot...")
+    print("\n[1/9] Implied TCR plot...")
     fig_implied_tcr()
 
-    print("\n[2/6] Spaghetti plot...")
+    print("\n[2/9] Spaghetti plot...")
     fig_spaghetti()
 
-    print("\n[3/6] Quantile envelope plot...")
+    print("\n[3/9] Quantile envelope plot...")
     fig_quantile_envelope()
 
-    print("\n[4/6] Warming rate comparison...")
+    print("\n[4/9] Warming rate comparison...")
     fig_warming_rate()
 
-    print("\n[5/6] Model accuracy over time...")
+    print("\n[5/9] Model accuracy over time (warming rate)...")
     fig_accuracy_over_time()
 
-    print("\n[6/6] Forcing comparison...")
+    print("\n[6/9] Model accuracy over time (implied TCR)...")
+    fig_tcr_accuracy_over_time()
+
+    print("\n[7/9] Warming rate compact (scatter + bias)...")
+    fig_warming_rate_compact()
+
+    print("\n[8/9] Implied TCR compact (scatter + bias)...")
+    fig_implied_tcr_compact()
+
+    print("\n[9/9] Forcing comparison...")
     fig_forcing_comparison()
 
     print("\nDone — all figures saved.")

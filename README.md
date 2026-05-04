@@ -15,7 +15,7 @@ pip install numpy pandas xarray statsmodels openpyxl tqdm matplotlib
 # Run the trend analysis (produces 4 output CSVs, ~15 min)
 python obs_forcing_analysis.py
 
-# Generate all 6 figures
+# Generate all 9 figures
 python plot_obs_forcing.py
 
 # Run tests
@@ -29,6 +29,7 @@ pytest test_obs_forcing_analysis.py -v
 | `common_history_1750-2024.nc` | 841-member anthropogenic forcing ensemble (1750--2024) | 1.8 MB |
 | `gmst_ensemble.csv` | 10,000-member GMST ensemble (Thorne et al. 2026 approach), 1850--2024 | 13 MB |
 | `Forcing and temperature time series.xlsx` | Model temperature (\_T) and forcing (\_F) predictions for 149 models | 184 KB |
+| `Projection information.md` | Per-model description of how each model's temperature and forcing series were derived | -- |
 
 ## Scripts
 
@@ -47,7 +48,7 @@ Options:
 - `--seed N` -- Set random seed for reproducibility (default: 42)
 
 ### `plot_obs_forcing.py`
-Generates 6 publication-quality figures in `figures/`:
+Generates 9 publication-quality figures:
 
 | Figure | File | Description |
 |--------|------|-------------|
@@ -56,7 +57,10 @@ Generates 6 publication-quality figures in `figures/`:
 | 3 | `model_quantile_envelope.png` | Model ensemble median and 5--95% range vs. observed |
 | 4 | `warming_rate_comparison.png` | Warming rates (C/decade), color-coded by publication era |
 | 5 | `model_accuracy_over_time.png` | Model/observed warming rate ratio vs. publication year |
-| 6 | `forcing_comparison.png` | Model vs. observed anthropogenic forcing rates |
+| 6 | `tcr_accuracy_over_time.png` | Model/observed implied TCR ratio vs. publication year |
+| 7 | `warming_rate_compact.png` | Compact 2-panel: model-vs-obs warming rate scatter + bias vs. publication year |
+| 8 | `implied_tcr_compact.png` | Compact 2-panel: model-vs-obs implied TCR scatter + bias vs. publication year |
+| 9 | `forcing_comparison.png` | Model vs. observed anthropogenic forcing rates |
 
 ### `test_obs_forcing_analysis.py`
 Unit tests for statistical functions, data loading, and output validation.
@@ -79,6 +83,8 @@ Each model is aligned to a LOWESS-smoothed observational time series at the mode
 ## Models
 
 The analysis includes 149 model variants spanning 1896--2007, from Arrhenius (1896) through IPCC AR4 (2007). Models with lower/median/upper variants are grouped by root name for visualization, with the median used as the central estimate.
+
+See [`Projection information.md`](./Projection%20information.md) for per-model documentation of how each temperature and forcing series was constructed (source publication, digitization approach, scenario assumptions, and any unit conversions).
 
 ## Contributors
 
